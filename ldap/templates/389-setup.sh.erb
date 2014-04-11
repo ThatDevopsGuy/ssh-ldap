@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# LDAP Setup Script
+# Sebastian Weigand | sab@sw-dd.com
+
+# First set up the 389 server:
+setup-ds-admin << EOF
+yes
+yes
+1
+no
+admin
+<%= scope.lookupvar('ldap::params::admin_server_password') %>
+<%= scope.lookupvar('ldap::params::admin_server_password') %>
+cn=Directory Manager
+<%= scope.lookupvar('ldap::params::directory_server_password') %>
+<%= scope.lookupvar('ldap::params::directory_server_password') %>
+yes
+EOF
+
+# Ensure the services are running:
+service dirsrv start
+service dirsrv-admin start

@@ -1,0 +1,14 @@
+ #!/usr/bin/env bash
+# Retrieve and print just the SSH public key stored within LDAP for a
+# given user, and return it.
+USERNAME=$1
+LDAPSERVER=<%= scope.lookupvar('ldap::params::ldap_vip') %>
+KEY=`ldapsearch -h $LDAPSERVER -LLL -xb "dc=<%= scope.lookupvar('ldap::params::ldap_domain') %>,dc=internal" uid=$USERNAME sshPublicKey | sed -n '/^ /{H;d};/sshPublicKey:/x;$g;s/\n *//g;s/sshPublicKey: //gp'`
+if [ "$KEY" ]
+then
+    echo $KEY
+    exit 0
+else
+    echo "Error: LDAP Search Failed" 1>&2
+    exit 1
+fi

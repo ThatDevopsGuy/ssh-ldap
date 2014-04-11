@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Removes a user from LDAP
+# Author: Sebastian Weigand | sab@sw-dd.com
+# Date: August, 2013
+# Version: 1
+
+DIRPASS=`cat /etc/ldap.secret`
+
+if [[ $# != 1 ]]; then
+    echo "Usage: del-ldap-user USERNAME"
+    exit 1
+else
+    USERNAME=$1
+fi
+
+RECORD=`ldapsearch -LLL -xb "dc=<%= scope.lookupvar('ldap::params::ldap_domain') %>,dc=internal" uid=$USERNAME`
+
+if [[ ${#RECORD} == 0 ]]; then
+    echo "Error: Could not find user \"$USERNAME\", sorry."
+    exit 2
+fi
+
+echo "$RECORD"
+echo "==============================================================================="
+read -p "Are you sure you want to remove this entry? [y/N]: " PROMPT
+echo
+
+# Ensure proper permissions:
+LOGDIR=/root/.ldap/del-ldap-users
+mkdir -p $LOGDIR
+touch $LOGDIR/modification-log
+chown -R root:root $LOGDIR
+chmod -R 700 $LOGDIR
+
+if [[ $PROMPT =~ "y" ]]; then
+    echo -n "Backing up existing entry...                                             "
+    ldapsearch -D "cn=Directory Manager" -w $DIRPASS -b "ou=people,dc=<%= scope.lookupvar('ldap::params::ldap_domain') %>,dc=internal" uid=$USERNAME > $LOGDIR/$USERNAME-`date +%s`
+    if [ $? -eq 0 ]; then
+        echo "[ OK ]"
+    else
+        echo "[FAIL]"
+    fi
+
+    echo -n "Removing LDAP entry...                                                   "
+    ldapdelete -D "cn=Directory Manager" -w $DIRPASS "uid=$USERNAME,ou=People,dc=<%= scope.lookupvar('ldap::params::ldap_domain') %>,dc=internal"
+    if [ $? -eq 0 ]; then
+        echo "[ OK ]"
+        echo "[`date "+%F %T"`] Successfully removed \"$USERNAME\" from LDAP." >> $LOGDIR/modification-log
+        echo "-------------------------------------------------------------------------------"
+        echo "User \"$USERNAME\" is no more. :("
+        echo
+    else
+        echo "[FAIL]"
+        echo "[`date "+%F %T"`] ERROR: Attempted to, but did not remove \"$USERNAME\" from LDAP." >> $LOGDIR/modification-log
+        exit 3
+    fi
+else
+    echo "Aborting."
+fi

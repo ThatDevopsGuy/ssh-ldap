@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Sebastian Weigand | sab@sw-dd.com | August 2013
+# Initialize all consumers specified in all replication agreements
+# Execute this on the SUPPLIER
+
+DIRPASS=`cat /etc/ldap.secret`
+TEMPFILE=`tempfile`
+REPLICATION_AGREEMENTS=`ldapsearch -D "cn=directory manager" -w $DIRPASS -s sub -b cn=config "(objectclass=nsds5ReplicationAgreement)" | perl -p00e 's/\r?\n //g' | grep "dn: "`
+
+echo "Reinitializing the following consumers:"
+echo "$REPLICATION_AGREEMENTS"
+
+while read -r LINE; do
+    echo $LINE >> $TEMPFILE
+    echo "changetype: modify" >> $TEMPFILE
+    echo "replace: nsds5BeginReplicaRefresh" >> $TEMPFILE
+    echo "nsds5BeginReplicaRefresh: start" >> $TEMPFILE
+    echo -e "\n" >> $TEMPFILE
+done <<< "$REPLICATION_AGREEMENTS"
+
+ldapmodify -D "cn=Directory Manager" -w <%= scope.lookupvar('ldap::params::directory_server_password') %> -f $TEMPFILE
+
+rm $TEMPFILE

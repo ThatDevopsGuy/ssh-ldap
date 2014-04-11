@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# Adds a user to LDAP
+# Author: Sebastian Weigand | sab@sw-dd.com
+# Date: August, 2013
+# Version: 0.9
+
+DIRPASS=`cat /etc/ldap.secret`
+
+if [[ $# > 0 ]] && [[ $# < 3 ]]; then
+    echo "Usage: add-ldap-user    (interactive)"
+    echo "Usage: add-ldap-user FIRSTNAME LASTNAME USERNAME EMAIL SSHPUBLICKEY [PASSWORD]"
+    echo "       where PASSWORD is optional."
+    exit 0
+fi
+
+if [[ $# == 5 ]] || [[ $# == 6 ]]; then
+    echo "Processing in batch mode."
+    FIRSTNAME=$1
+    LASTNAME=$2
+    USERNAME=$3
+    EMAIL=$4
+    SSHPUBLICKEY=$5
+    if [[ $# == 6 ]]; then
+        PASSWORD1=$6
+    fi
+else
+    echo "Add LDAP User Script"
+    read -p "Enter the first name for this user: " FIRSTNAME
+    read -p "Enter the last name for this user: " LASTNAME
+    read -p "Enter the username for this user: " USERNAME
+    read -p "Enter the email address for this user [$USERNAME@<%= scope.lookupvar('ldap::params::full_domain') %>]: " EMAIL
+    EMAIL=${EMAIL:-$USERNAME@<%= scope.lookupvar('ldap::params::full_domain') %>}
+    read -p "Enter the public SSH key for this user: " SSHPUBLICKEY
+    read -p "Establish a password for this user? [y/N] : " SETPASS
+
+    if [[ $SETPASS =~ "y" ]]; then
+        read -p "Enter password: " -s PASSWORD1
+        read -p "Again: " -s PASSWORD2
+        echo
+        #echo "Debug Passwords: $PASSWORD1 and $PASSWORD2"
+        if [[ $PASSWORD1 != $PASSWORD2 ]]; then
+            echo "I'm afraid the passwords do not match."
+            exit 1
+        fi
+        PASSWORDVERB="with"
+    else
+        PASSWORDVERB="without"
+    fi
+
+    echo -e "\n"
+    echo "Let's see if I got this correct:"
+    echo "$FIRSTNAME $LASTNAME, known as $USERNAME, with email $EMAIL, will be added $PASSWORDVERB a password."
+    echo
+    read -p "Does this look right? [y/N] : " CONFIRMED
+
+    if [[ ! $CONFIRMED =~ "y" ]]; then
+        echo "Aborting."
+        exit 2
+    else
+        echo "Procesing LDAP request..."
+    fi
+    echo
+fi
+
+# Check to see if it exists already:
+RECORD=`ldapsearch -LLL -xb "dc=<%= scope.lookupvar('ldap::params::ldap_domain') %>,dc=internal" uid=$USERNAME`
+
+if [[ ${#RECORD} > 0 ]]; then
+    echo "==============================================================================="
+    echo "$RECORD"
+    echo "==============================================================================="
+    echo "Error: It appears that \"$USERNAME\" already exists."
+    exit 2
+fi
+
+echo -n "Retrieving the next available UID...           "
+# Retrieve the next number to use for the UID:
+LAST_UID=`ldapsearch -D "cn=Directory Manager" -w $DIRPASS -b 'ou=people,dc=<%= scope.lookupvar('ldap::params::ldap_domain') %>,dc=internal' uidNumber | grep "uidNumber: " | sed "s|uidNumber: ||" | uniq | sort -n | tail -n 1`
+NEXT_UID=$(($LAST_UID + 1))
+if [[ $NEXT_UID < 2000 ]]; then
+    NEXT_UID=2000
+fi
+echo -e "[$NEXT_UID]\n"
+
+# TODO: Implement proper password manipulation, as LDAP requires the use of the LDAP password change script called after 
+# a user is added.
+
+ldapmodify -D "cn=Directory Manager" -w $DIRPASS << EOF
+dn: uid=$USERNAME,ou=People,dc=<%= scope.lookupvar('ldap::params::ldap_domain') %>,dc=internal
+changetype: add
+mail: $EMAIL
+uid: $USERNAME
+givenName: $FIRSTNAME
+objectClass: top
+objectClass: person
+objectClass: organizationalPerson
+objectClass: inetorgperson
+objectClass: posixAccount
+objectClass: ldappublickey
+sn: $LASTNAME
+cn: $FIRSTNAME $LASTNAME
+gecos: $FIRSTNAME $LASTNAME
+userPassword: $PASSWORD1
+uidNumber: $NEXT_UID
+gidNumber: <%= scope.lookupvar('ldap::params::user_group') %>
+homeDirectory: /home/$USERNAME
+loginShell: /bin/bash
+sshPublicKey: $SSHPUBLICKEY
+EOF
+
+if [ $? -eq 0 ]; then
+    echo "Successfully created $USERNAME."
+else
+    echo "Something went wrong when attempting to create $USERNAME..."
+    exit 1
+fi

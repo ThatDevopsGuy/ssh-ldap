@@ -1,0 +1,39 @@
+# Supplier Initialization LDIF
+# Contains SSH Public Key schema modifications
+# Sebastian Weigand | sab@sw-dd.com
+
+# SSH Public Key Attribute Type:
+dn: cn=schema
+changetype: modify
+add: attributetypes
+attributetypes: ( 1.3.6.1.4.1.24552.500.1.1.1.13 NAME 'sshPublicKey' DESC 'Ope
+ nSSH Public Key' EQUALITY octetStringMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.
+ 40 X-ORIGIN 'user defined' )
+
+# SSH Object Class:
+dn: cn=schema
+changetype: modify
+add: objectclasses
+objectclasses: ( 1.3.6.1.4.1.24552.500.1.1.2.0 NAME 'ldapPublicKey' DESC '' SU
+ P top STRUCTURAL MAY sshPublicKey X-ORIGIN 'user defined' )
+
+# Supplier change log:
+dn: cn=changelog5,cn=config
+changetype: add
+objectclass: top
+objectclass: extensibleObject
+cn: changelog5
+nsslapd-changelogdir: /var/lib/dirsrv/slapd-<%= @hostname %>/changelogdb
+nsslapd-changelogmaxage: 10d
+
+# Supplier replica:
+dn: cn=replica,cn=dc\3Ddomain\2Cdc\3Dinternal,cn=mapping tree,cn=config
+changetype: add
+objectClass: nsDS5Replica
+objectClass: top
+nsDS5ReplicaRoot: dc=<%= scope.lookupvar('ldap::params::ldap_domain') %>,dc=internal
+nsDS5ReplicaType: 3
+nsDS5Flags: 1
+nsDS5ReplicaId: 1
+nsds5ReplicaPurgeDelay: 604800
+cn: replica

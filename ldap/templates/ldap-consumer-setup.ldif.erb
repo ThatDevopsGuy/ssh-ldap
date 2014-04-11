@@ -1,0 +1,32 @@
+# Consumer Initialization LDIF
+# Contains "Replication Manager" credentials, replication settings
+# Sebastian Weigand | sab@sw-dd.com
+
+# Consumer ID:
+dn: cn=replication manager,cn=config
+changetype: add
+objectClass: inetorgperson
+objectClass: person
+objectClass: top
+objectClass: organizationalPerson
+cn: Replication Manager
+sn: Manager
+nsIdleTimeout: 0
+userPassword: <%= scope.lookupvar('ldap::params::directory_server_password') %>
+givenName: Replication
+uid: RManager
+passwordGraceUserTime: 0
+
+# Consumer replica:
+dn: cn=replica,cn=dc\3Ddomain\2Cdc\3Dinternal,cn=mapping tree,cn=config
+changetype: add
+objectClass: nsDS5Replica
+objectClass: top
+nsDS5ReplicaRoot: dc=<%= scope.lookupvar('ldap::params::ldap_domain') %>,dc=internal
+nsDS5ReplicaType: 2
+nsDS5Flags: 0
+nsds5ReplicaPurgeDelay: 604800
+nsDS5ReplicaBindDN: cn=replication manager,cn=config
+cn: replica
+nsDS5ReplicaId: 65535
+EOF

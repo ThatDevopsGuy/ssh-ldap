@@ -1,0 +1,22 @@
+# LDAP Replication Agreements
+# Contains RAs for each consumer_host
+# Sebastian Weigand | sab@sw-dd.com
+
+<% @consumer_hosts.each do |consumer_host| -%>
+# Supplier agreement:
+dn: cn=<%= consumer_host %>-replication-agreement,cn=replica,cn=dc\3Ddomain\2Cdc\3Dinternal,cn=mapping tree,cn=config
+changetype: add
+objectClass: top
+objectClass: nsDS5ReplicationAgreement
+description: Automated replication agreement from <%= @hostname %> and <%= consumer_host %>
+cn: <%= consumer_host %>-replication-agreement
+nsDS5ReplicaRoot: dc=<%= scope.lookupvar('ldap::params::ldap_domain') %>,dc=internal
+nsDS5ReplicaHost: <%= consumer_host %>
+nsDS5ReplicaPort: 389
+nsDS5ReplicaBindDN: cn=replication manager,cn=config
+nsDS5ReplicaTransportInfo: LDAP
+nsDS5ReplicaBindMethod: SIMPLE
+nsDS5ReplicaCredentials: <%= scope.lookupvar('ldap::params::directory_server_password') %>
+nsds5BeginReplicaRefresh: start
+
+<% end -%>

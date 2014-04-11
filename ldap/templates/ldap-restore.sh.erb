@@ -1,0 +1,185 @@
+#!/usr/bin/env bash
+# 389-LDAP Restoration Script
+# Sebastian Weigand | sab@sw-dd.com
+# August 2013
+# Version 1.0
+
+# =============================================================================
+# Initialization
+# =============================================================================
+
+if [[ $# > 0 ]]; then
+    if [[ $1 != "--force" ]]; then
+        echo "Usage: $0          : Begin an LDAP restore operation after prompt"
+        echo "Usage: $0 --force  : Do not prompt, immediately restore LDAP"
+        exit 0
+    fi
+else
+    read -p "Confirm restoration the LDAP server to the latest backup: <y/N> " CONFIRMED
+    if [[ ! $CONFIRMED =~ "y" ]]; then
+        echo "Aborting."
+        exit 2
+    fi
+fi
+
+DIRPASS=`cat /etc/ldap.secret`
+RESTORESCRIPT=/usr/lib/x86_64-linux-gnu/dirsrv/slapd-`hostname`/bak2db
+RESTORELOCATION=/tmp/ldaprestore
+DSELOCATION=/etc/dirsrv/slapd-`hostname`
+SCHEMALOCATION=/etc/dirsrv/slapd-`hostname`/schema
+
+BACKUPUSER=dirsrv
+BACKUPGROUP=$BACKUPUSER
+TIMESTAMP=`date +%F_at_%H-%M-%S-%Z`
+LOGFILE="/root/.ldap/ldap_restore.log"
+CURDIR=`pwd`
+
+# Error on first exit:
+set -e
+
+# Setup logfile:
+touch $LOGFILE
+chown root:root $LOGFILE
+chmod 600 $LOGFILE
+
+echo -e "\n[`date +%F_at_%H-%M-%S-%Z`] New Restore Session Started" >> $LOGFILE
+echo "Archival activities will be logged to: $LOGFILE"
+echo "================================================================================" | tee -a $LOGFILE
+
+# Stop the directory server temporarily:
+printf '%-74s' "[01/13] Stopping Directory server..."
+service dirsrv stop >> $LOGFILE 2>&1
+
+if [[ `pgrep -c slapd` != 0 ]]; then
+    echo "The Directory Server appears to still be running:" | tee -a $LOGFILE
+    ps auxwww | grep slapd | tee -a $LOGFILE
+    echo "Aborting restore." | tee -a $LOGFILE
+    exit 1
+fi
+
+printf "[ OK ]"
+
+# Remove anything in the restoration directory beforehand:
+printf '\n%-74s' "[02/13] Setting up restoration environment..." | tee -a $LOGFILE
+mkdir -p $RESTORELOCATION
+chown -R $BACKUPUSER:$BACKUPGROUP $RESTORELOCATION
+chmod -R 750 $RESTORELOCATION
+cd $RESTORELOCATION
+rm -Rf *
+printf "[ OK ]"
+
+# Get the latest backup, or if none exist, initialize the server:
+printf '\n%s' "[03/13] Determining the latest backup..." | tee -a $LOGFILE
+LATEST_BACKUP_TIMESTAMP=`s3cmd ls s3://dc=<%= scope.lookupvar('ldap::params::s3_ldap_backup_bucket') %>/ | tail -1 | awk '{print $2}' | cut -d '/' -f 5`
+
+if [[ ${#LATEST_BACKUP_TIMESTAMP} == 0 ]]; then
+    printf '%40s' "[FAIL]"
+
+    echo -e "\n\tThere are no backups to restore from, initalizing directory server..." | tee -a $LOGFILE
+
+    printf '\n%-74s' " + [1/3] Starting the directory service back up..." | tee -a $LOGFILE
+    service dirsrv start >> $LOGFILE 2>&1
+    printf "[ OK ]"
+
+    printf '\n%s' " + [2/4] Waiting for the service to accept commands" | tee -a $LOGFILE
+    sleep 1; echo -n "."; sleep 1; echo -n "."; sleep 1; echo -n "."
+    printf '%26s' "[ OK ]"
+
+    printf '\n%-74s' " + [3/4] Configuring the supplier..." | tee -a $LOGFILE
+    ldapmodify -D "cn=Directory Manager" -w $DIRPASS -f /root/.ldap/ldap-supplier-setup.ldif >> $LOGFILE 2>&1
+    printf "[ OK ]"
+
+    printf '\n%-74s' " + [4/4] Establishing and initalizing replication agreements..." | tee -a $LOGFILE
+    ldapmodify -D "cn=Directory Manager" -w $DIRPASS -f /root/.ldap/ldap-replication-agreements.ldif >> $LOGFILE 2>&1
+    printf "[ OK ]"
+
+    echo
+    echo "================================================================================" | tee -a $LOGFILE
+    echo "The database was initialized successfully." | tee -a $LOGFILE
+    echo -e "\n[`date +%F_at_%H-%M-%S-%Z`] Restoration Session Ended\n" >> $LOGFILE
+
+    exit 1
+else
+    printf '%40s' "[ $LATEST_BACKUP_TIMESTAMP ]" | tee -a $LOGFILE
+
+    printf '\n%-74s' "[04/13] Downloading the latest backup..." | tee -a $LOGFILE
+    s3cmd get s3://dc=<%= scope.lookupvar('ldap::params::s3_ldap_backup_bucket') %>/$LATEST_BACKUP_TIMESTAMP/ldap_backup_$LATEST_BACKUP_TIMESTAMP.tar.xz >> $LOGFILE 2>&1
+    printf "[ OK ]"
+
+    printf '\n%-74s' "[05/13] Downloading the latest backup's checksum..." | tee -a $LOGFILE
+    s3cmd get s3://dc=<%= scope.lookupvar('ldap::params::s3_ldap_backup_bucket') %>/$LATEST_BACKUP_TIMESTAMP/ldap_backup_$LATEST_BACKUP_TIMESTAMP.tar.xz.sha256sum >> $LOGFILE 2>&1
+    printf "[ OK ]"
+
+    # Check archive integrity:
+    printf '\n%-74s' "[06/13] Verifying archive integrity..." | tee -a $LOGFILE
+    
+    if [[ `sha256sum -c ldap_backup_$LATEST_BACKUP_TIMESTAMP.tar.xz.sha256sum 2>&1 | tee -a $LOGFILE` != "ldap_backup_$LATEST_BACKUP_TIMESTAMP.tar.xz: OK" ]]; then
+        printf "[FAIL]"
+        echo -e "\n\tArchive integrity check failed, attempting recovery..." | tee -a $LOGFILE
+        
+        printf '\n%-74s' " + [1/2] Resynchronizing directory with recovery data..." | tee -a $LOGFILE
+        s3cmd sync s3://dc=<%= scope.lookupvar('ldap::params::s3_ldap_backup_bucket') %>/$LATEST_BACKUP_TIMESTAMP/ $RESTORELOCATION >> $LOGFILE 2>&1
+        printf "[ OK ]"
+        
+        printf '\n%-74s' " + [2/2] Attempting recovery from parity file..." | tee -a $LOGFILE
+        PAR2OUTPUT=`par2repair ldap_backup_$LATEST_BACKUP_TIMESTAMP.tar.xz 2>&1 | tr '\r' '~' | sed -r 's/((Construct|Load|Solv|Repair)ing|Scanning: "(.*?)"): [0-9]*[.][0-9]%~//g' | tr '~' '\n' | tee -a $LOGFILE`
+        
+        case "$PAR2OUTPUT" in 
+            *"Repair is not possible"* ) 
+                printf "[FAIL]"
+                echo
+                echo "Recovery is not possible, please manually address this problem." | tee -a $LOGFILE
+                echo "Aborting." | tee -a $LOGFILE
+                exit 2
+                ;;
+            * ) 
+                printf "[ OK ]"
+                ;;
+        esac
+    else
+        printf "[ OK ]"
+    fi
+
+    printf '\n%-74s' "[07/13] Unpacking recovery tarball..." | tee -a $LOGFILE
+    tar xfa ldap_backup_$LATEST_BACKUP_TIMESTAMP.tar.xz >> $LOGFILE 2>&1
+    printf "[ OK ]"
+
+    cd ldap_backup_$LATEST_BACKUP_TIMESTAMP
+
+    # Both DSE and Schema LDIFS are stored here, and must be removed prior to the
+    # bak2db script is executed:
+    printf '\n%-74s' "[08/13] Moving DSE and Schema LDIFS..." | tee -a $LOGFILE
+    mv miscellaneous/dses/dse.ldif $DSELOCATION/
+    mv miscellaneous/schemas/*.ldif $SCHEMALOCATION/
+    mv miscellaneous ../
+    printf "[ OK ]"
+
+    printf '\n%-74s' "[09/13] Restoring databases (this may take a while)..." | tee -a $LOGFILE
+    $RESTORESCRIPT . >> $LOGFILE 2>&1
+    printf "[ OK ]"
+
+    printf '\n%-74s' "[10/13] Starting the directory service back up..." | tee -a $LOGFILE
+    service dirsrv start >> $LOGFILE 2>&1
+    printf "[ OK ]"
+
+fi
+
+printf '\n%s' "[11/13] Waiting for the service to accept commands" | tee -a $LOGFILE
+sleep 1; echo -n "."; sleep 1; echo -n "."; sleep 1; echo -n "."
+printf '%27s' "[ OK ]"
+
+printf '\n%-74s' "[12/13] Reinitializing consumers..." | tee -a $LOGFILE
+ldap-initalize-all-consumers >> $LOGFILE 2>&1
+printf "[ OK ]"
+
+printf '\n%-74s' "[13/13] Cleaning restore location..." | tee -a $LOGFILE
+cd $RESTORELOCATION/../
+rm -Rf $RESTORELOCATION
+printf "[ OK ]"
+
+echo
+echo "================================================================================" | tee -a $LOGFILE
+echo "The database was restored successfully." | tee -a $LOGFILE
+echo -e "\n[`date +%F_at_%H-%M-%S-%Z`] Restoration Session Ended\n" >> $LOGFILE
+
+cd $CURDIR

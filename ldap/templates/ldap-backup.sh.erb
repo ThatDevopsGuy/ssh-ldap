@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+# 389-LDAP Backup Script
+# Sebastian Weigand | sab@sw-dd.com
+# August 2013
+# Version 1.0
+
+BACKUPSCRIPT=/usr/lib/x86_64-linux-gnu/dirsrv/slapd-`hostname`/db2bak
+DSELOCATION=/etc/dirsrv/slapd-`hostname`
+SCHEMALOCATION=/etc/dirsrv/slapd-`hostname`/schema
+BACKUPDIR=/mnt/ldap-backup
+BACKUPUSER=dirsrv
+BACKUPGROUP=$BACKUPUSER
+TIMESTAMP=`date +%F_at_%H-%M-%S-%Z`
+LOGFILE="/root/.ldap/ldap_backup.log"
+CURDIR=`pwd`
+
+# Error on first exit:
+set -e
+
+# Setup logfile:
+touch $LOGFILE
+chown root:root $LOGFILE
+chmod 600 $LOGFILE
+
+echo -e "\n[$TIMESTAMP] New Backup Session Started" >> $LOGFILE
+
+echo "Archival activities will be logged to: $LOGFILE"
+echo "================================================================================" | tee -a $LOGFILE
+
+# Setup and ensure the backup directory:
+mkdir -p $BACKUPDIR
+chown $BACKUPUSER:$BACKUPGROUP $BACKUPDIR
+chmod 750 $BACKUPDIR
+cd $BACKUPDIR/
+
+# Stop the directory server temporarily:
+printf '%-74s' "[01/11] Stopping Directory server..."
+service dirsrv stop >> $LOGFILE 2>&1
+
+if [[ `pgrep -c slapd` != 0 ]]; then
+    echo "The Directory Server appears to still be running:" | tee -a $LOGFILE
+    ps auxwww | grep slapd | tee -a $LOGFILE
+    echo "Aborting backup." | tee -a $LOGFILE
+    exit 1
+fi
+
+printf "[ OK ]"
+
+# Backup the server:
+printf '\n%-74s' "[02/11] Backing up databases..." | tee -a $LOGFILE
+$BACKUPSCRIPT $BACKUPDIR/ldap_backup_$TIMESTAMP/ >> $LOGFILE 2>&1
+printf "[ OK ]"
+
+# Backup the DSE.ldif and Schema files:
+printf '\n%-74s' "[03/11] Backing up DSE and Schema ldifs..." | tee -a $LOGFILE
+mkdir -p $BACKUPDIR/ldap_backup_$TIMESTAMP/miscellaneous/{dses,schemas}
+cp $DSELOCATION/dse* "$BACKUPDIR/ldap_backup_$TIMESTAMP/miscellaneous/dses/"
+cp $SCHEMALOCATION/*.ldif "$BACKUPDIR/ldap_backup_$TIMESTAMP/miscellaneous/schemas/"
+chown -R $BACKUPUSER:$BACKUPGROUP "$BACKUPDIR/ldap_backup_$TIMESTAMP/miscellaneous/"
+printf "[ OK ]"
+
+# Compress and archive:
+printf '\n%-74s' "[04/11] Archiving database..." | tee -a $LOGFILE
+nice -n 10 ionice -c 3 tar cf "ldap_backup_$TIMESTAMP.tar" "ldap_backup_$TIMESTAMP" >> $LOGFILE 2>&1
+printf "[ OK ]"
+
+printf '\n%-74s' "[05/11] Compressing archive (this may take a while)..." | tee -a $LOGFILE
+nice -n 10 ionice -c 3 xz -9 -M 50% "ldap_backup_$TIMESTAMP.tar" >> $LOGFILE 2>&1
+printf "[ OK ]"
+
+printf '\n%-74s' "[06/11] Creating checksum of archive..." | tee -a $LOGFILE
+nice -n 10 ionice -c 3 sha256sum "ldap_backup_$TIMESTAMP.tar.xz" > "ldap_backup_$TIMESTAMP.tar.xz.sha256sum"
+printf "[ OK ]"
+
+printf '\n%-74s' "[07/11] Creating archive parity (this may take a while)..." | tee -a $LOGFILE
+nice -n 10 ionice -c 3 par2create -r25 -n1 "ldap_backup_$TIMESTAMP.tar.xz" 2>&1 | tr '\r' '~' | sed -r 's/(Construct|Process)ing: [0-9]*[.][0-9]%~//g' | tr '~' '\n' >> $LOGFILE 2>&1
+printf "[ OK ]"
+
+printf '\n%-74s' "[08/11] Removing unarchived database..." | tee -a $LOGFILE
+rm -Rf "ldap_backup_$TIMESTAMP"
+printf "[ OK ]"
+
+printf '\n%-74s' "[09/11] Tidying backup files..." | tee -a $LOGFILE
+mkdir $TIMESTAMP
+mv ldap_backup_$TIMESTAMP* $TIMESTAMP/
+chown -R root:root $TIMESTAMP/
+echo "Run chattr -R -i on this directory to make modifications." > "$TIMESTAMP/This directory may be immutable"
+chmod 500 $TIMESTAMP/
+chmod 400 $TIMESTAMP/*
+chattr -R +i $TIMESTAMP
+printf "[ OK ]"
+
+printf '\n%-74s' "[10/11] Uploading archive directory to S3..." | tee -a $LOGFILE
+s3cmd --verbose sync $BACKUPDIR s3://<%= scope.lookupvar('ldap::params::s3_ldap_backup_bucket') %> >> $LOGFILE 2>&1
+printf "[ OK ]"
+
+printf '\n%-74s' "[11/11] Starting the directory service back up..." | tee -a $LOGFILE
+service dirsrv start >> $LOGFILE 2>&1
+printf "[ OK ]"
+
+echo
+echo "================================================================================" | tee -a $LOGFILE
+echo "The database was backed up successfully." | tee -a $LOGFILE
+
+echo -e "\n[`date +%F_at_%H-%M-%S-%Z`] Backup Session Ended\n" >> $LOGFILE
+
+cd $CURDIR
