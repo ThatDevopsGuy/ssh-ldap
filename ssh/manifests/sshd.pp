@@ -5,7 +5,7 @@
 #   Contains SSHD configuration, plus LDAP tie-ins
 #
 # Author:
-#   Sebastian Weigand | sab@sw-dd.com
+#   Sebastian Weigand | sab@sab.systems
 
 class ssh::sshd {
 

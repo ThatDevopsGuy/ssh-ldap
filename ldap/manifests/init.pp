@@ -5,7 +5,7 @@
 #   Contains server-side components for 389 LDAP server
 #
 # Author:
-#   Sebastian Weigand | sab@sw-dd.com
+#   Sebastian Weigand | sab@sab.systems
 
 class ldap {
     

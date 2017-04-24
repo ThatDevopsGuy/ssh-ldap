@@ -5,7 +5,7 @@
 #   Contains parameters for the LDAP server
 #
 # Author:
-#   Sebastian Weigand | sab@sw-dd.com
+#   Sebastian Weigand | sab@sab.systems
 
 class ldap::params {
 
